@@ -21,12 +21,6 @@ class Program
         if (!SK.Initialize(settings))
             return;
 
-        // Create assets used by the app
-        Pose cubePose = new Pose(0, 0, -0.5f);
-        Model cube = Model.FromMesh(
-            Mesh.GenerateRoundedCube(Vec3.One * 0.1f, 0.02f),
-            Material.UI);
-
         // Some nice floor for when we are in VR
         Matrix floorTransform = Matrix.TS(0, -1.5f, 0, new Vec3(30, 0.1f, 30));
         Material floorMaterial = new Material("floor.hlsl");
@@ -43,9 +37,6 @@ class Program
         SK.Run(() => {
             if (SK.System.displayType == Display.Opaque && !passthroughStepper.Enabled)
                 Mesh.Cube.Draw(floorMaterial, floorTransform);
-
-            UI.Handle("Cube", ref cubePose, cube.Bounds);
-            cube.Draw(cubePose.ToMatrix());
 
             // Passthrough menu
             UI.WindowBegin("Passthrough Menu", ref window1Pose);
@@ -93,7 +84,7 @@ class Program
 
                 // List all Anchors
                 UI.HSeparator();
-                UI.Label($"Anchors ({spatialEntityStepper.AnchorCount})");
+                UI.Label($"Anchors Loaded ({spatialEntityStepper.AnchorCount})");
 
                 foreach (var anchor in spatialEntityStepper.Anchors)
                 {
