@@ -16,29 +16,28 @@ using XrAsyncRequestIdFB = System.UInt64;
 
 namespace StereoKitFBSpatialEntity
 {
-    public struct Anchor
-    {
-        public Guid Uuid;
-        public XrSpace XrSpace;
-        public Pose Pose;
-        public bool LocateSuccess;
-    }
-
     public class SpatialEntityFBExt : IStepper
 	{
-		private bool extAvailable;
+        private bool extAvailable;
 		private bool enabled;
 		private Dictionary<Guid, Anchor> _anchors = new Dictionary<Guid, Anchor>();
-		
+		private Dictionary<XrAsyncRequestIdFB, CreateCallback> _createCallbacks = new Dictionary<XrAsyncRequestIdFB, CreateCallback>();
+
         public bool Available => extAvailable;
 		public bool Enabled { get => extAvailable && enabled; set => enabled = value; }
         public int AnchorCount => _anchors.Count;
         public IReadOnlyCollection<Anchor> Anchors => _anchors.Values;
 
+		/// <summary>
+		/// Set a log level filter for this extension so that we can easily print info when debugging, without cluttering up the output
+		/// when not needed.
+		/// </summary>
+		public LogLevel LogLevelFilter = LogLevel.Info;
+
         public SpatialEntityFBExt()
 		{
 			if (SK.IsInitialized)
-				Log.Err("SpatialEntityFBExt must be constructed before StereoKit is initialized!");
+				LogSpatialEntityFBExt(LogLevel.Error, "SpatialEntityFBExt must be constructed before StereoKit is initialized!");
 			Backend.OpenXR.RequestExt("XR_FB_spatial_entity");
 			Backend.OpenXR.RequestExt("XR_FB_spatial_entity_storage");
 			Backend.OpenXR.RequestExt("XR_FB_spatial_entity_query");
@@ -56,7 +55,7 @@ namespace StereoKitFBSpatialEntity
 			// Set up xrPollEvent subscription
 			if (extAvailable)
 			{
-				Backend.OpenXR.OnPollEvent += pollEventHandler;
+				Backend.OpenXR.OnPollEvent += PollEventHandler;
 			}
 
 			// Enable on initialization
@@ -91,7 +90,7 @@ namespace StereoKitFBSpatialEntity
                 }
                 else
                 {
-                    Log.Err($"xrLocateSpace error! Result: {result}");
+					LogSpatialEntityFBExt(LogLevel.Error, $"xrLocateSpace error! Result: {result}");
                     anchor.LocateSuccess = false;
                 }
             }
@@ -102,29 +101,26 @@ namespace StereoKitFBSpatialEntity
 
 		}
 
+		/// <summary>
+		/// Try to get an Anchor based on the Uuid.
+		/// </summary>
+		/// <param name="SpatialAnchorUuid"></param>
+		/// <returns></returns>
         public Anchor? TryGetSpatialAnchor(Guid SpatialAnchorUuid)
         {
             _anchors.TryGetValue(SpatialAnchorUuid, out var anchor);
             return anchor;
         }
 
-        public delegate void OnCreateSuccessDel(Guid newAnchorUuid);
-		public delegate void OnCreateErrorDel();
-
-		private Dictionary<XrAsyncRequestIdFB, CreateCallback> _createCallbacks = new Dictionary<XrAsyncRequestIdFB, CreateCallback>();
-
-		private class CreateCallback
-		{
-			public OnCreateSuccessDel OnSuccess;
-			public OnCreateErrorDel   OnError;
-		}
-
+		/// <summary>
+		/// Load all avaiable Anchors into the runtime.
+		/// </summary>
         public void LoadAllAnchors()
         {
             XrSpaceQueryInfoFB queryInfo = new XrSpaceQueryInfoFB();
             XrResult result = xrQuerySpacesFB(Backend.OpenXR.Session, queryInfo, out XrAsyncRequestIdFB requestId);
-            if (result != XrResult.Success)
-                Log.Err($"Error querying anchors! Result: {result}");
+			if (result != XrResult.Success)
+				LogSpatialEntityFBExt(LogLevel.Error, $"Error querying anchors! Result: {result}");
         }
 
         /// <summary>
@@ -135,14 +131,14 @@ namespace StereoKitFBSpatialEntity
         /// <param name="onSuccessCallback">The action to be performed when the anchor is successfully created. This is a delegate that has one Guid parameter (the new anchor id).</param>
         /// <param name="onErrorCallback">The action to perform when the create anchor fails. This is a delegate with no parameters.</param>
         /// <returns></returns>
-        public bool CreateAnchor(Pose pose, OnCreateSuccessDel onSuccessCallback = null, OnCreateErrorDel onErrorCallback = null)
+		public bool CreateAnchor(Pose pose, OnCreateSuccessDel onSuccessCallback = null, OnCreateErrorDel onErrorCallback = null)
 		{
-			Log.Info("Begin CreateAnchor");
+			LogSpatialEntityFBExt(LogLevel.Info, "Begin CreateAnchor");
 
 			if (!Enabled)
 			{
-				Log.Err("Spatial entity extension must be enabled before calling CreateAnchor!");
-				return false;
+				LogSpatialEntityFBExt(LogLevel.Error, "Spatial entity extension must be enabled before calling CreateAnchor!");
+                return false;
 			}
 
 			XrSpatialAnchorCreateInfoFB anchorCreateInfo = new XrSpatialAnchorCreateInfoFB(Backend.OpenXR.Space, pose, Backend.OpenXR.Time);
@@ -154,13 +150,13 @@ namespace StereoKitFBSpatialEntity
 
 			if (result != XrResult.Success)
 			{
-				Log.Err($"Error requesting creation of spatial anchor: {result}");
+				LogSpatialEntityFBExt(LogLevel.Error, $"Error requesting creation of spatial anchor: {result}");
 				return false;
-			}
+            }
 
-			Log.Info($"xrCreateSpatialAnchorFB initiated. The request id is: {requestId}.");
+			LogSpatialEntityFBExt(LogLevel.Info, $"xrCreateSpatialAnchorFB initiated. The request id is: {requestId}.");
 
-			var createCallback = new CreateCallback
+            var createCallback = new CreateCallback
 			{
 				OnSuccess = onSuccessCallback,
 				OnError = onErrorCallback
@@ -171,70 +167,37 @@ namespace StereoKitFBSpatialEntity
 			return true;
 		}
 
-		public void EraseAllAnchors()
+		/// <summary>
+		/// Delete an Anchor from the system. Note: the Anchor must currently be loaded in order to delete it.
+		/// </summary>
+		/// <param name="uuid">The Uuid of the anchor to delete.</param>
+		/// <returns></returns>
+		public void DeleteAnchor(Guid AnchorUuid)
+		{
+			if (_anchors.TryGetValue(AnchorUuid, out Anchor anchor))
+			{
+                // Initiate the async erase operation. Anchor won't be removed until the async operation completes.
+                EraseSpace(anchor.XrSpace);
+            }
+		}
+
+		/// <summary>
+		/// Delete all loaded Anchors from the system. Note: this will only delete the anchors currently LOADED into the runtime.
+		/// It will not delete anchors that are not loaded into the runtime.
+		/// </summary>
+		public void DeleteAllAnchors()
 		{
 			foreach (var anchor in _anchors.Values)
 			{
-				// Initiate the async erase operation. Then we will remove it from the Dictionary once the event 
-				// completes (in the poll handler).
+                // Initiate the async erase operation. Anchor won't be removed until the async operation completes.
 				EraseSpace(anchor.XrSpace);
-			}
+            }
 		}
-
-		// XR_FB_spatial_entity
-		del_xrCreateSpatialAnchorFB               xrCreateSpatialAnchorFB;
-		del_xrGetSpaceUuidFB                      xrGetSpaceUuidFB;
-		del_xrEnumerateSpaceSupportedComponentsFB xrEnumerateSpaceSupportedComponentsFB;
-		del_xrSetSpaceComponentStatusFB           xrSetSpaceComponentStatusFB;
-		del_xrGetSpaceComponentStatusFB           xrGetSpaceComponentStatusFB;
-
-		// XR_FB_spatial_entity_storage
-		del_xrSaveSpaceFB  xrSaveSpaceFB;
-		del_xrEraseSpaceFB xrEraseSpaceFB;
-
-		// XR_FB_spatial_entity_query
-		del_xrQuerySpacesFB xrQuerySpacesFB;
-		del_xrRetrieveSpaceQueryResultsFB xrRetrieveSpaceQueryResultsFB;
-
-		// Misc
-		del_xrLocateSpace xrLocateSpace;
-
-		bool LoadBindings()
-		{
-			// XR_FB_spatial_entity
-			xrCreateSpatialAnchorFB               = Backend.OpenXR.GetFunction<del_xrCreateSpatialAnchorFB>("xrCreateSpatialAnchorFB");
-			xrGetSpaceUuidFB                      = Backend.OpenXR.GetFunction<del_xrGetSpaceUuidFB>("xrGetSpaceUuidFB");
-			xrEnumerateSpaceSupportedComponentsFB = Backend.OpenXR.GetFunction<del_xrEnumerateSpaceSupportedComponentsFB>("xrEnumerateSpaceSupportedComponentsFB");
-			xrSetSpaceComponentStatusFB           = Backend.OpenXR.GetFunction<del_xrSetSpaceComponentStatusFB>("xrSetSpaceComponentStatusFB");
-			xrGetSpaceComponentStatusFB           = Backend.OpenXR.GetFunction<del_xrGetSpaceComponentStatusFB>("xrGetSpaceComponentStatusFB");
-
-			// XR_FB_spatial_entity_storage
-			xrSaveSpaceFB  = Backend.OpenXR.GetFunction<del_xrSaveSpaceFB>("xrSaveSpaceFB");
-			xrEraseSpaceFB = Backend.OpenXR.GetFunction<del_xrEraseSpaceFB>("xrEraseSpaceFB");
-
-			// XR_FB_spatial_entity_query
-			xrQuerySpacesFB               = Backend.OpenXR.GetFunction<del_xrQuerySpacesFB>("xrQuerySpacesFB");
-			xrRetrieveSpaceQueryResultsFB = Backend.OpenXR.GetFunction<del_xrRetrieveSpaceQueryResultsFB>("xrRetrieveSpaceQueryResultsFB");
-
-			// Misc
-			xrLocateSpace = Backend.OpenXR.GetFunction<del_xrLocateSpace>("xrLocateSpace");
-
-			return xrCreateSpatialAnchorFB != null
-				&& xrGetSpaceUuidFB != null
-				&& xrEnumerateSpaceSupportedComponentsFB != null
-				&& xrSetSpaceComponentStatusFB != null
-				&& xrGetSpaceComponentStatusFB != null
-				&& xrSaveSpaceFB != null
-				&& xrEraseSpaceFB != null
-				&& xrQuerySpacesFB != null
-				&& xrRetrieveSpaceQueryResultsFB != null
-				&& xrLocateSpace != null;
-		}
-
-		private void pollEventHandler(IntPtr XrEventDataBufferData)
+        
+		private void PollEventHandler(IntPtr XrEventDataBufferData)
 		{
 			XrEventDataBuffer myBuffer = Marshal.PtrToStructure<XrEventDataBuffer>(XrEventDataBufferData);
-			Log.Info($"xrPollEvent: received {myBuffer.type}");
+			LogSpatialEntityFBExt(LogLevel.Info, $"xrPollEvent: received {myBuffer.type}");
 
 			switch (myBuffer.type)
 			{
@@ -243,19 +206,19 @@ namespace StereoKitFBSpatialEntity
 
 					if (!_createCallbacks.TryGetValue(spatialAnchorComplete.requestId, out CreateCallback callack))
 					{
-						Log.Err($"Unable to find callback for the anchor create request with Id: {spatialAnchorComplete.requestId}!");
+						LogSpatialEntityFBExt(LogLevel.Error, $"Unable to find callback for the anchor created request with Id: {spatialAnchorComplete.requestId}!");
 						break;
 					}
 
 					if (spatialAnchorComplete.result != XrResult.Success)
 					{
-						Log.Err($"XrEventDataSpatialAnchorCreateCompleteFB error! Result: {spatialAnchorComplete.result}");
+						LogSpatialEntityFBExt(LogLevel.Error, $"XrEventDataSpatialAnchorCreateCompleteFB error! Result: {spatialAnchorComplete.result}");
 						if (callack.OnError != null)
 							callack.OnError();
 						break;
 					}
 
-					var newCreatedAnchor = new Anchor
+					Anchor newCreatedAnchor = new Anchor
 					{
 						Uuid = spatialAnchorComplete.uuid,
 						XrSpace = spatialAnchorComplete.space,
@@ -274,8 +237,8 @@ namespace StereoKitFBSpatialEntity
 
 						if (setComponentResult == XrResult.XR_ERROR_SPACE_COMPONENT_STATUS_ALREADY_SET_FB)
 						{
-							Log.Err("XR_ERROR_SPACE_COMPONENT_STATUS_ALREADY_SET_FB");
-
+							LogSpatialEntityFBExt(LogLevel.Error, "XR_ERROR_SPACE_COMPONENT_STATUS_ALREADY_SET_FB");
+							
 							// Save the space to storage
 							SaveSpace(spatialAnchorComplete.space);
 						}
@@ -305,7 +268,7 @@ namespace StereoKitFBSpatialEntity
 					}
 					else
 					{
-						Log.Err("Error from XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB: " + setStatusComplete.result);
+						LogSpatialEntityFBExt(LogLevel.Error, "Error from XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB: " + setStatusComplete.result);
 					}
 
 					break;
@@ -313,12 +276,11 @@ namespace StereoKitFBSpatialEntity
 					XrEventDataSpaceSaveCompleteFB saveComplete = Marshal.PtrToStructure<XrEventDataSpaceSaveCompleteFB>(XrEventDataBufferData);
 					if (saveComplete.result == XrResult.Success)
 					{
-						Log.Info("Save space sucessful!");
+						LogSpatialEntityFBExt(LogLevel.Info, "Save space sucessful!");
 					}
 					else
 					{
-						Log.Err($"Save space failed. Result: {saveComplete.result}");
-						Log.Err($"XrEventDataSpaceSaveCompleteFB error! Result: {saveComplete.result}");
+						LogSpatialEntityFBExt(LogLevel.Error, $"Save space failed. XrEventDataSpaceSaveCompleteFB error! Result: {saveComplete.result}");
 					}
 
 					break;
@@ -336,7 +298,7 @@ namespace StereoKitFBSpatialEntity
 					XrResult result = xrRetrieveSpaceQueryResultsFB(Backend.OpenXR.Session, resultsAvailable.requestId, out queryResults);
 					if (result != XrResult.Success)
 					{
-						Log.Err($"xrRetrieveSpaceQueryResultsFB error! Result: {result}");
+						LogSpatialEntityFBExt(LogLevel.Error, $"xrRetrieveSpaceQueryResultsFB error! Result: {result}");
 						break;
 					}
 
@@ -344,26 +306,33 @@ namespace StereoKitFBSpatialEntity
 
 					int structByteSize = Marshal.SizeOf<XrSpaceQueryResultFB>();
 					IntPtr ptr = Marshal.AllocHGlobal(structByteSize * (int)queryResults.resultCountOutput);
-					queryResults.results = ptr;
-					result = xrRetrieveSpaceQueryResultsFB(Backend.OpenXR.Session, resultsAvailable.requestId, out queryResults);
-
-					if (result != XrResult.Success)
-					{
-						Log.Err($"xrRetrieveSpaceQueryResultsFB error! Result: {result}");
-						break;
-					}
-
-					Log.Info($"Spatial entity loaded from storage! Count: {queryResults.resultCountOutput}");
-
-					// Copy the results into managed memory (since it's easier to work with)
 					List<XrSpaceQueryResultFB> resultsList = new List<XrSpaceQueryResultFB>();
-					for (int i = 0; i < queryResults.resultCountOutput; i++)
-					{
-						XrSpaceQueryResultFB res = Marshal.PtrToStructure<XrSpaceQueryResultFB>(queryResults.results + (i * structByteSize));
-						resultsList.Add(res);
-					}	
 
-					Marshal.FreeHGlobal(ptr);
+					try
+					{
+						queryResults.results = ptr;
+						result = xrRetrieveSpaceQueryResultsFB(Backend.OpenXR.Session, resultsAvailable.requestId, out queryResults);
+
+						if (result != XrResult.Success)
+						{
+							LogSpatialEntityFBExt(LogLevel.Error, $"xrRetrieveSpaceQueryResultsFB error! Result: {result}");
+							break;
+						}
+
+						LogSpatialEntityFBExt(LogLevel.Info, $"Spatial entities loaded from storage! Count: {queryResults.resultCountOutput}");
+
+						// Copy the results into managed memory (since it's easier to work with)
+						for (int i = 0; i < queryResults.resultCountOutput; i++)
+						{
+							XrSpaceQueryResultFB res = Marshal.PtrToStructure<XrSpaceQueryResultFB>(queryResults.results + (i * structByteSize));
+							resultsList.Add(res);
+						}	
+					}
+					finally
+					{
+						// Make sure we always free the allocated memory to prevent a memory leak!
+						Marshal.FreeHGlobal(ptr);
+					}
 
 					resultsList.ForEach(res =>
 					{
@@ -373,8 +342,8 @@ namespace StereoKitFBSpatialEntity
 							XrSpaceComponentStatusSetInfoFB setComponentInfo = new XrSpaceComponentStatusSetInfoFB(XrSpaceComponentTypeFB.XR_SPACE_COMPONENT_TYPE_LOCATABLE_FB, true);
 							XrResult setComponentResult = xrSetSpaceComponentStatusFB(res.space, setComponentInfo, out XrAsyncRequestIdFB requestId);
 
-							if (setComponentResult != XrResult.Success)
-								Log.Err($"xrSetSpaceComponentStatusFB error! Result: {setComponentResult}");
+							if (setComponentResult != XrResult.Success  && setComponentResult != XrResult.XR_ERROR_SPACE_COMPONENT_STATUS_ALREADY_SET_FB)
+								LogSpatialEntityFBExt(LogLevel.Error, $"xrSetSpaceComponentStatusFB error! Result: {setComponentResult}");
 
 							// Once this async event XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB is posted (above), this spatial entity will
 							// be added to the application's Anchor list!
@@ -386,8 +355,8 @@ namespace StereoKitFBSpatialEntity
 							XrSpaceComponentStatusSetInfoFB setComponentInfo = new XrSpaceComponentStatusSetInfoFB(XrSpaceComponentTypeFB.XR_SPACE_COMPONENT_TYPE_STORABLE_FB, true);
 							XrResult setComponentResult = xrSetSpaceComponentStatusFB(res.space, setComponentInfo, out XrAsyncRequestIdFB requestId);
 
-							if (setComponentResult != XrResult.Success)
-								Log.Err($"xrSetSpaceComponentStatusFB error! Result: {setComponentResult}");
+							if (setComponentResult != XrResult.Success && setComponentResult != XrResult.XR_ERROR_SPACE_COMPONENT_STATUS_ALREADY_SET_FB)
+								LogSpatialEntityFBExt(LogLevel.Error, $"xrSetSpaceComponentStatusFB error! Result: {setComponentResult}");
 						}
 					});
 
@@ -410,7 +379,7 @@ namespace StereoKitFBSpatialEntity
 
 			if (result != XrResult.Success)
 			{
-				Log.Err($"xrEnumerateSpaceSupportedComponentsFB Error! Result: {result}");
+				LogSpatialEntityFBExt(LogLevel.Error, $"xrEnumerateSpaceSupportedComponentsFB Error! Result: {result}");
 			}
 
 			for (int i = 0; i < numComponents; i++)
@@ -427,15 +396,93 @@ namespace StereoKitFBSpatialEntity
 			XrSpaceSaveInfoFB saveInfo = new XrSpaceSaveInfoFB(space, XrSpaceStorageLocationFB.XR_SPACE_STORAGE_LOCATION_LOCAL_FB, XrSpacePersistenceModeFB.XR_SPACE_PERSISTENCE_MODE_INDEFINITE_FB);
 			XrResult result = xrSaveSpaceFB(Backend.OpenXR.Session, saveInfo, out XrAsyncRequestIdFB requestId);
 			if (result != XrResult.Success)
-				Log.Err($"xrSaveSpaceFB! Result: {result}");
+				LogSpatialEntityFBExt(LogLevel.Error, $"xrSaveSpaceFB! Result: {result}");
 		}
 
-		private void EraseSpace(XrSpace space)
+        private void EraseSpace(XrSpace space)
 		{
-			XrSpaceEraseInfoFB eraseInfo = new XrSpaceEraseInfoFB(space, XrSpaceStorageLocationFB.XR_SPACE_STORAGE_LOCATION_LOCAL_FB);
+            // Initiate the async erase operation. Then we will remove it from the Dictionary once the event completes (in the poll event handler).
+            XrSpaceEraseInfoFB eraseInfo = new XrSpaceEraseInfoFB(space, XrSpaceStorageLocationFB.XR_SPACE_STORAGE_LOCATION_LOCAL_FB);
 			XrResult result = xrEraseSpaceFB(Backend.OpenXR.Session, eraseInfo, out XrAsyncRequestIdFB requestId);
 			if (result != XrResult.Success)
-				Log.Err($"xrEraseSpaceFB! Result: {result}");
+				LogSpatialEntityFBExt(LogLevel.Error, $"xrEraseSpaceFB! Result: {result}");
 		}
-	}
+
+		private void LogSpatialEntityFBExt(LogLevel logLevel, string message)
+		{
+            if (logLevel >= this.LogLevelFilter)
+				Log.Write(logLevel, message);
+        }
+
+        #region OpenXR function bindings
+        // XR_FB_spatial_entity
+        del_xrCreateSpatialAnchorFB xrCreateSpatialAnchorFB;
+        del_xrGetSpaceUuidFB xrGetSpaceUuidFB;
+        del_xrEnumerateSpaceSupportedComponentsFB xrEnumerateSpaceSupportedComponentsFB;
+        del_xrSetSpaceComponentStatusFB xrSetSpaceComponentStatusFB;
+        del_xrGetSpaceComponentStatusFB xrGetSpaceComponentStatusFB;
+
+        // XR_FB_spatial_entity_storage
+        del_xrSaveSpaceFB xrSaveSpaceFB;
+        del_xrEraseSpaceFB xrEraseSpaceFB;
+
+        // XR_FB_spatial_entity_query
+        del_xrQuerySpacesFB xrQuerySpacesFB;
+        del_xrRetrieveSpaceQueryResultsFB xrRetrieveSpaceQueryResultsFB;
+
+        // Misc
+        del_xrLocateSpace xrLocateSpace;
+
+        private bool LoadBindings()
+        {
+            // XR_FB_spatial_entity
+            xrCreateSpatialAnchorFB = Backend.OpenXR.GetFunction<del_xrCreateSpatialAnchorFB>("xrCreateSpatialAnchorFB");
+            xrGetSpaceUuidFB = Backend.OpenXR.GetFunction<del_xrGetSpaceUuidFB>("xrGetSpaceUuidFB");
+            xrEnumerateSpaceSupportedComponentsFB = Backend.OpenXR.GetFunction<del_xrEnumerateSpaceSupportedComponentsFB>("xrEnumerateSpaceSupportedComponentsFB");
+            xrSetSpaceComponentStatusFB = Backend.OpenXR.GetFunction<del_xrSetSpaceComponentStatusFB>("xrSetSpaceComponentStatusFB");
+            xrGetSpaceComponentStatusFB = Backend.OpenXR.GetFunction<del_xrGetSpaceComponentStatusFB>("xrGetSpaceComponentStatusFB");
+
+            // XR_FB_spatial_entity_storage
+            xrSaveSpaceFB = Backend.OpenXR.GetFunction<del_xrSaveSpaceFB>("xrSaveSpaceFB");
+            xrEraseSpaceFB = Backend.OpenXR.GetFunction<del_xrEraseSpaceFB>("xrEraseSpaceFB");
+
+            // XR_FB_spatial_entity_query
+            xrQuerySpacesFB = Backend.OpenXR.GetFunction<del_xrQuerySpacesFB>("xrQuerySpacesFB");
+            xrRetrieveSpaceQueryResultsFB = Backend.OpenXR.GetFunction<del_xrRetrieveSpaceQueryResultsFB>("xrRetrieveSpaceQueryResultsFB");
+
+            // Misc
+            xrLocateSpace = Backend.OpenXR.GetFunction<del_xrLocateSpace>("xrLocateSpace");
+
+            return xrCreateSpatialAnchorFB != null
+                && xrGetSpaceUuidFB != null
+                && xrEnumerateSpaceSupportedComponentsFB != null
+                && xrSetSpaceComponentStatusFB != null
+                && xrGetSpaceComponentStatusFB != null
+                && xrSaveSpaceFB != null
+                && xrEraseSpaceFB != null
+                && xrQuerySpacesFB != null
+                && xrRetrieveSpaceQueryResultsFB != null
+                && xrLocateSpace != null;
+        }
+        #endregion
+
+        #region Nested types
+        public struct Anchor
+        {
+            public Guid Uuid;
+            public XrSpace XrSpace;
+            public Pose Pose;
+            public bool LocateSuccess;
+        }
+
+        public delegate void OnCreateSuccessDel(Guid newAnchorUuid);
+        public delegate void OnCreateErrorDel();
+
+        private class CreateCallback
+        {
+            public OnCreateSuccessDel OnSuccess;
+            public OnCreateErrorDel OnError;
+        }
+        #endregion
+    }
 }

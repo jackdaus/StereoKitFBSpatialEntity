@@ -131,6 +131,7 @@ namespace StereoKitFBSpatialEntity
 
 	#endregion
 
+
 	#region Other XrFunctions
 
 	delegate XrResult del_xrLocateSpace(

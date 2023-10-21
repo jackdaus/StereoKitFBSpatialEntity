@@ -262,13 +262,18 @@ namespace StereoKitFBSpatialEntity
 		public IntPtr filter;        // Pointer of type XrSpaceFilterInfoBaseHeaderFB
 		public IntPtr excludeFilter; // Pointer of type XrSpaceFilterInfoBaseHeaderFB
 
-        /// <param name="maxCount">Maximum number of anchors to retrieve</param>
-        public XrSpaceQueryInfoFB(UInt32 maxCount = 20)
+		// Limit the max load limit to 100 by default
+        public XrSpaceQueryInfoFB() : this(100)
+		{
+		}
+
+        /// <param name="maxResCount">Maximum number of anchors to retrieve</param>
+        public XrSpaceQueryInfoFB(uint maxResCount)
 		{
 			type = XrStructureType.XR_TYPE_SPACE_QUERY_INFO_FB;
 			next = IntPtr.Zero;
 			queryAction = XrSpaceQueryActionFB.XR_SPACE_QUERY_ACTION_LOAD_FB;
-			maxResultCount = maxCount;
+			maxResultCount = maxResCount;
 			timeout = 0;
 			filter = IntPtr.Zero;
 			excludeFilter = IntPtr.Zero;
