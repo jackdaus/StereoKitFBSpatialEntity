@@ -13,10 +13,10 @@ This project implements the following OpenXR extensions:
 
 # How to Use in Your Project
 
-If you want to take this code and implement it in your StereoKit project, the steps are pretty straightforward. Here, the spatial entity extension is implemented with a StereoKit [IStepper](https://stereokit.net/Pages/StereoKit.Framework/IStepper.html). So all you need to do is:
-1. Copy/paste the **SpatialEntity** directory from this repo into your StereoKit project.
+Here are the steps on how to use the Meta spatial anchor extension in your StereoKit project.
+1. Copy/paste the **SpatialEntity** directory from this repo into your StereoKit project. It contains all the code to implement the OpenXR extension for StereoKit.
 
-2. Add the stepper (must be done BEFORE calling `SK.Initialize`).
+2. Add the SpatialEntityFBExt to your main program file. Note: This code must be called BEFORE calling `SK.Initialize`.
 	```csharp
 	SpatialEntityFBExt spatialEntityStepper = SK.AddStepper(new SpatialEntityFBExt());
 	```
@@ -106,8 +106,10 @@ If you want to take this code and implement it in your StereoKit project, the st
 
 # Features not (yet?) implemented
 
+I'd like to get these additional OpenXR extensions up and running as well, when I find the time.
+
 - [ ] Implement XR_FB_spatial_entity_sharing
-- [ ] Implement XR_FB_scene
 - [ ] Implement XR_FB_spatial_entity_container
 - [ ] Implement XR_FB_spatial_entity_storage_batch
 - [ ] Implement XR_FB_spatial_entity_user
+- [ ] Implement XR_FB_scene
